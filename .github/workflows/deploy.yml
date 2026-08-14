@@ -1,0 +1,50 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: receipt-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      AWS_REGION: ap-northeast-1
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      ALLOWED_EMAILS: ${{ secrets.ALLOWED_EMAILS }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Validate settings
+        shell: bash
+        run: |
+          for name in AWS_ROLE_ARN ALLOWED_EMAILS; do
+            if [[ -z "${!name}" ]]; then echo "::error::${name} is not configured"; exit 1; fi
+          done
+      - run: npm ci
+      - run: npm run build
+      - run: python -m unittest discover -s tests -v
+      - uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          role-session-name: Receipt-${{ github.run_id }}
+          mask-aws-account-id: true
+      - name: Deploy
+        run: npx cdk deploy Takoyaki3ReceiptStack --require-approval never --parameters "AllowedEmails=${ALLOWED_EMAILS}"
+

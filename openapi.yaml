@@ -1,0 +1,68 @@
+openapi: 3.0.3
+info:
+  title: Takoyaki3 Receipt API
+  version: 1.0.0
+  description: Firebase JWT で保護されたレシート解析・管理 API
+servers:
+  - url: https://example.execute-api.ap-northeast-1.amazonaws.com/prod
+components:
+  securitySchemes:
+    firebaseJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    ReceiptItem:
+      type: object
+      required: [name, quantity]
+      properties:
+        name: { type: string }
+        quantity: { type: number }
+        unitPrice: { type: number, nullable: true }
+        price: { type: number, nullable: true }
+    Receipt:
+      type: object
+      properties:
+        receipt_id: { type: string, format: uuid }
+        storeName: { type: string }
+        purchasedAt: { type: string }
+        subtotal: { type: number, nullable: true }
+        tax: { type: number, nullable: true }
+        total: { type: number, nullable: true }
+        items: { type: array, items: { $ref: '#/components/schemas/ReceiptItem' } }
+security:
+  - firebaseJwt: []
+paths:
+  /receipts:
+    get:
+      summary: 自分のレシート一覧
+      responses: { '200': { description: OK } }
+    post:
+      summary: 画像を解析して保存
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [image, mimeType]
+              properties:
+                image: { type: string, format: byte }
+                mimeType: { type: string, enum: [image/jpeg, image/png] }
+      responses: { '201': { description: Created } }
+  /receipts/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      summary: 詳細と一時的な画像 URL を取得
+      responses: { '200': { description: OK }, '404': { description: Not found } }
+    put:
+      summary: 読み取り結果を修正
+      responses: { '200': { description: Updated } }
+    delete:
+      summary: 記録と画像を削除
+      responses: { '200': { description: Deleted } }
+

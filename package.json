@@ -1,0 +1,21 @@
+{
+  "name": "takoyaki3-receipt",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc --noEmit",
+    "synth": "cdk synth",
+    "test": "python -m unittest discover -s tests -v"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.261.0",
+    "constructs": "^10.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "aws-cdk": "^2.1136.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.2"
+  }
+}
+
