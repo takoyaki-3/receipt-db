@@ -37,14 +37,103 @@ jobs:
           for name in AWS_ROLE_ARN ALLOWED_EMAILS GEMINI_API_KEY; do
             if [[ -z "${!name}" ]]; then echo "::error::${name} is not configured"; exit 1; fi
           done
+          if [[ ! "${AWS_ROLE_ARN}" =~ ^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:role/.+ ]]; then
+            echo "::error::AWS_ROLE_ARN is set, but its format is invalid. Expected arn:...:iam::<12 digits>:role/<name>."
+            exit 1
+          fi
+          echo "AWS_ROLE_ARN: configured (format valid)"
+          echo "AWS_REGION: ${AWS_REGION}"
+          echo "ALLOWED_EMAILS: configured"
+          echo "GEMINI_API_KEY: configured"
       - run: npm ci
       - run: npm run build
       - run: python -m unittest discover -s tests -v
-      - uses: aws-actions/configure-aws-credentials@v6.2.3
+
+      # トークン本体は表示せず、IAM Role の信頼ポリシー照合に必要な claims だけを出力する。
+      - name: Show GitHub OIDC diagnostics
+        id: oidc
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const token = await core.getIDToken('sts.amazonaws.com');
+            const payload = token.split('.')[1];
+            const claims = JSON.parse(
+              Buffer.from(payload, 'base64url').toString('utf8')
+            );
+
+            const safeClaims = {
+              iss: claims.iss,
+              aud: claims.aud,
+              sub: claims.sub,
+              repository: claims.repository,
+              repository_id: claims.repository_id,
+              repository_owner: claims.repository_owner,
+              repository_owner_id: claims.repository_owner_id,
+              ref: claims.ref,
+              ref_type: claims.ref_type,
+              workflow_ref: claims.workflow_ref,
+              job_workflow_ref: claims.job_workflow_ref,
+              event_name: claims.event_name,
+              actor: claims.actor,
+              actor_id: claims.actor_id,
+              runner_environment: claims.runner_environment,
+              iat: claims.iat,
+              exp: claims.exp,
+            };
+
+            for (const [name, value] of Object.entries(safeClaims)) {
+              core.info(`${name}=${value ?? '(not present)'}`);
+            }
+            core.setOutput('subject', claims.sub ?? '');
+            core.setOutput('audience', claims.aud ?? '');
+
+            await core.summary
+              .addHeading('GitHub OIDC diagnostics')
+              .addTable([
+                [{data: 'Claim', header: true}, {data: 'Value', header: true}],
+                ['iss', String(claims.iss ?? '(not present)')],
+                ['aud', String(claims.aud ?? '(not present)')],
+                ['sub', String(claims.sub ?? '(not present)')],
+                ['repository', String(claims.repository ?? '(not present)')],
+                ['repository_id', String(claims.repository_id ?? '(not present)')],
+                ['repository_owner_id', String(claims.repository_owner_id ?? '(not present)')],
+                ['ref', String(claims.ref ?? '(not present)')],
+                ['workflow_ref', String(claims.workflow_ref ?? '(not present)')],
+              ])
+              .write();
+
+      - name: Configure AWS credentials
+        id: configure_aws
+        uses: aws-actions/configure-aws-credentials@v6.2.3
         with:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           role-session-name: Receipt-${{ github.run_id }}
           mask-aws-account-id: true
+
+      - name: Explain AWS authentication failure
+        if: ${{ failure() && steps.configure_aws.outcome == 'failure' }}
+        shell: bash
+        env:
+          OIDC_AUDIENCE: ${{ steps.oidc.outputs.audience }}
+          OIDC_SUBJECT: ${{ steps.oidc.outputs.subject }}
+        run: |
+          echo "::error::AWS role assumption failed. Compare the OIDC claims above with the IAM role trust policy."
+          echo "Expected audience: ${OIDC_AUDIENCE}"
+          echo "Expected subject:  ${OIDC_SUBJECT}"
+          {
+            echo "## AWS authentication failed"
+            echo
+            echo "Check that the IAM Role trust policy allows these exact GitHub OIDC values:"
+            echo
+            echo "- audience: \`${OIDC_AUDIENCE}\`"
+            echo "- subject: \`${OIDC_SUBJECT}\`"
+            echo
+            echo "Also verify that \`token.actions.githubusercontent.com\` is registered as the IAM OIDC provider and that \`AWS_ROLE_ARN\` points to this Role."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Show AWS caller identity
+        run: aws sts get-caller-identity --output json
+
       - name: Deploy
         run: npx cdk deploy Takoyaki3ReceiptStack --require-approval never --parameters "AllowedEmails=${ALLOWED_EMAILS}" --parameters "GeminiApiKey=${GEMINI_API_KEY}"
