@@ -21,6 +21,7 @@ jobs:
       AWS_REGION: ap-northeast-1
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
       ALLOWED_EMAILS: ${{ secrets.ALLOWED_EMAILS }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -33,7 +34,7 @@ jobs:
       - name: Validate settings
         shell: bash
         run: |
-          for name in AWS_ROLE_ARN ALLOWED_EMAILS; do
+          for name in AWS_ROLE_ARN ALLOWED_EMAILS GEMINI_API_KEY; do
             if [[ -z "${!name}" ]]; then echo "::error::${name} is not configured"; exit 1; fi
           done
       - run: npm ci
@@ -46,5 +47,4 @@ jobs:
           role-session-name: Receipt-${{ github.run_id }}
           mask-aws-account-id: true
       - name: Deploy
-        run: npx cdk deploy Takoyaki3ReceiptStack --require-approval never --parameters "AllowedEmails=${ALLOWED_EMAILS}"
-
+        run: npx cdk deploy Takoyaki3ReceiptStack --require-approval never --parameters "AllowedEmails=${ALLOWED_EMAILS}" --parameters "GeminiApiKey=${GEMINI_API_KEY}"

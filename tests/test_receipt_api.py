@@ -52,33 +52,51 @@ def event(method, resource, body=None, receipt_id=None):
 
 class ReceiptParserTests(unittest.TestCase):
     def test_parses_summary_and_all_line_items(self):
-        document = {"ExpenseDocuments": [{
-            "SummaryFields": [
-                {"Type": {"Text": "VENDOR_NAME"}, "ValueDetection": {"Text": "たこやき商店", "Confidence": 99}},
-                {"Type": {"Text": "TOTAL"}, "ValueDetection": {"Text": "￥1,280", "Confidence": 98}},
-                {"Type": {"Text": "TAX"}, "ValueDetection": {"Text": "116円", "Confidence": 94}},
-            ],
-            "LineItemGroups": [{"LineItems": [
-                {"LineItemExpenseFields": [
-                    {"Type": {"Text": "ITEM"}, "ValueDetection": {"Text": "たこ焼き", "Confidence": 97}},
-                    {"Type": {"Text": "QUANTITY"}, "ValueDetection": {"Text": "2", "Confidence": 92}},
-                    {"Type": {"Text": "PRICE"}, "ValueDetection": {"Text": "1,200", "Confidence": 96}},
-                ]},
-            ]}],
-        }], "Blocks": [{"BlockType": "LINE", "Text": "たこやき商店"}]}
+        model_result = {
+            "storeName": "たこやき商店", "purchasedAt": "2026-08-14", "address": "東京都",
+            "phone": "03-0000-0000", "subtotal": 1164, "tax": 116, "total": 1280,
+            "currency": "JPY", "paymentMethod": "現金", "confidence": 97.5,
+            "rawText": "たこやき商店\nたこ焼き 2点 1,200",
+            "items": [{
+                "name": "たこ焼き", "quantity": 2, "unitPrice": 600, "price": 1200,
+                "productCode": "A01", "discount": None, "taxRate": "10%", "confidence": 98,
+            }],
+        }
+        document = {"candidates": [{"content": {"parts": [{"text": json.dumps(model_result)}]}}]}
 
-        result = receipt_api.parse_expense(document)
+        result = receipt_api.parse_gemini_response(document)
 
         self.assertEqual(result["storeName"], "たこやき商店")
         self.assertEqual(result["total"], Decimal("1280"))
         self.assertEqual(result["tax"], Decimal("116"))
         self.assertEqual(result["items"][0]["quantity"], Decimal("2"))
         self.assertEqual(result["items"][0]["price"], Decimal("1200"))
-        self.assertEqual(result["rawText"], "たこやき商店")
+        self.assertEqual(result["items"][0]["unitPrice"], Decimal("600"))
+        self.assertIn("たこやき商店", result["rawText"])
 
     def test_rejects_document_without_expense(self):
-        with self.assertRaisesRegex(ValueError, "認識できません"):
-            receipt_api.parse_expense({"ExpenseDocuments": []})
+        with self.assertRaisesRegex(ValueError, "解析結果を取得できません"):
+            receipt_api.parse_gemini_response({"candidates": []})
+
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "secret-key", "GEMINI_MODEL": "gemini-3.7-flash"})
+    @patch("receipt_api.urlopen")
+    def test_gemini_request_uses_requested_model_image_and_schema(self, urlopen):
+        model_result = {
+            "storeName": "店", "purchasedAt": "", "address": "", "phone": "",
+            "subtotal": None, "tax": None, "total": 500, "currency": "JPY",
+            "paymentMethod": "", "items": [], "confidence": 95, "rawText": "店",
+        }
+        api_response = {"candidates": [{"content": {"parts": [{"text": json.dumps(model_result)}]}}]}
+        urlopen.return_value.__enter__.return_value.read.return_value = json.dumps(api_response).encode()
+
+        receipt_api.analyze_receipt(b"image", "image/jpeg")
+
+        request = urlopen.call_args.args[0]
+        payload = json.loads(request.data)
+        self.assertIn("gemini-3.7-flash:generateContent", request.full_url)
+        self.assertEqual(request.get_header("X-goog-api-key"), "secret-key")
+        self.assertEqual(payload["contents"][0]["parts"][1]["inline_data"]["mime_type"], "image/jpeg")
+        self.assertEqual(payload["generationConfig"]["responseFormat"]["text"]["mimeType"], "application/json")
 
 
 class AuthenticationTests(unittest.TestCase):
@@ -102,17 +120,16 @@ class AuthenticationTests(unittest.TestCase):
 class ApiTests(unittest.TestCase):
     @patch.dict(os.environ, {"ALLOWED_EMAILS": "owner@example.com", "IMAGES_BUCKET_NAME": "images"})
     @patch("receipt_api._services")
-    @patch("receipt_api.parse_expense", return_value={"storeName": "店", "items": [], "itemCount": 0, "total": Decimal("500")})
-    def test_upload_analyzes_and_stores_receipt(self, _parse, services):
-        table, s3, textract = MagicMock(), MagicMock(), MagicMock()
-        textract.analyze_expense.return_value = {"ExpenseDocuments": [{}]}
-        services.return_value = table, s3, textract
+    @patch("receipt_api.analyze_receipt", return_value={"storeName": "店", "items": [], "itemCount": 0, "total": Decimal("500")})
+    def test_upload_analyzes_and_stores_receipt(self, analyze, services):
+        table, s3 = MagicMock(), MagicMock()
+        services.return_value = table, s3
         result = receipt_api.handler(event("POST", "/receipts", {
             "mimeType": "image/jpeg", "image": base64.b64encode(b"jpeg-image").decode(),
         }), None)
 
         self.assertEqual(result["statusCode"], 201)
-        textract.analyze_expense.assert_called_once_with(Document={"Bytes": b"jpeg-image"})
+        analyze.assert_called_once_with(b"jpeg-image", "image/jpeg")
         s3.put_object.assert_called_once()
         table.put_item.assert_called_once()
 
@@ -130,4 +147,3 @@ class ApiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

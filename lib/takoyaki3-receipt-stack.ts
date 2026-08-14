@@ -4,7 +4,6 @@ import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
-import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
@@ -22,6 +21,16 @@ export class Takoyaki3ReceiptStack extends cdk.Stack {
     const firebaseProjectId = new cdk.CfnParameter(this, 'FirebaseProjectId', {
       type: 'String',
       default: 'takoyaki3-auth',
+    });
+    const geminiApiKey = new cdk.CfnParameter(this, 'GeminiApiKey', {
+      type: 'String',
+      noEcho: true,
+      description: 'Google AI Gemini Developer API key',
+    });
+    const geminiModel = new cdk.CfnParameter(this, 'GeminiModel', {
+      type: 'String',
+      default: 'gemini-3.7-flash',
+      description: 'Gemini model used for receipt image recognition',
     });
 
     const receiptsTable = new dynamodb.Table(this, 'ReceiptsTable', {
@@ -53,14 +62,12 @@ export class Takoyaki3ReceiptStack extends cdk.Stack {
         RECEIPTS_TABLE_NAME: receiptsTable.tableName,
         IMAGES_BUCKET_NAME: imagesBucket.bucketName,
         ALLOWED_EMAILS: cdk.Fn.join(',', allowedEmails.valueAsList),
+        GEMINI_API_KEY: geminiApiKey.valueAsString,
+        GEMINI_MODEL: geminiModel.valueAsString,
       },
     });
     receiptsTable.grantReadWriteData(receiptFunction);
     imagesBucket.grantReadWrite(receiptFunction);
-    receiptFunction.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['textract:AnalyzeExpense'],
-      resources: ['*'],
-    }));
 
     const authFunction = new lambda.Function(this, 'AuthFunction', {
       runtime: lambda.Runtime.PYTHON_3_12,
