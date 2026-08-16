@@ -27,12 +27,67 @@ function receiptDate(receipt) {
 }
 const inSelectedMonth = receipt => { const d=receiptDate(receipt); return d.getFullYear()===state.month.getFullYear() && d.getMonth()===state.month.getMonth(); };
 
+const chartColors=['#7559e8','#d9f36b','#f29e74','#55b7a4','#e7c65e','#9f8fe8','#ef7e93','#9ba2aa'];
+const compactYen = value => value>=10000 ? `${Math.round(value/1000)}千円` : yen.format(value);
+
+function renderDailyChart(receipts) {
+  const days=new Date(state.month.getFullYear(),state.month.getMonth()+1,0).getDate();
+  const totals=Array(days).fill(0);
+  receipts.forEach(receipt=>{totals[receiptDate(receipt).getDate()-1]+=Number(receipt.total||0)});
+  const max=Math.max(...totals,0), peakDay=totals.indexOf(max)+1;
+  $('#daily-peak').textContent=max ? `最大 ${peakDay}日 · ${yen.format(max)}` : '';
+  if(!max){$('#daily-chart').innerHTML='<div class="chart-empty">この月の購入記録はまだありません</div>';return}
+  const width=760,height=240,left=54,right=12,top=18,bottom=35,plotW=width-left-right,plotH=height-top-bottom;
+  const slot=plotW/days,barW=Math.max(5,Math.min(15,slot*.62));
+  const grid=[0,.5,1].map(rate=>{const y=top+plotH*(1-rate);return `<g><line x1="${left}" y1="${y}" x2="${width-right}" y2="${y}"/><text x="${left-8}" y="${y+4}">${escapeHtml(compactYen(max*rate))}</text></g>`}).join('');
+  const bars=totals.map((value,index)=>{
+    const barH=value/max*plotH,x=left+slot*index+(slot-barW)/2,y=top+plotH-barH;
+    const label=(index===0||(index+1)%5===0||index===days-1)?`<text class="day-label" x="${x+barW/2}" y="${height-11}">${index+1}</text>`:'';
+    return `<g class="day-bar"><rect x="${x}" y="${y}" width="${barW}" height="${Math.max(barH,value?2:0)}" rx="${Math.min(4,barW/2)}"><title>${index+1}日: ${yen.format(value)}</title></rect>${label}</g>`;
+  }).join('');
+  $('#daily-chart').innerHTML=`<svg viewBox="0 0 ${width} ${height}" aria-hidden="true"><g class="chart-grid">${grid}</g>${bars}</svg>`;
+  $('#daily-chart').setAttribute('aria-label',`${state.month.getMonth()+1}月の日別購入金額。最大は${peakDay}日の${yen.format(max)}です`);
+}
+
+function renderCategoryChart(receipts) {
+  const amounts=new Map();
+  receipts.forEach(receipt=>{const name=receipt.category||'未分類';amounts.set(name,(amounts.get(name)||0)+Number(receipt.total||0))});
+  const entries=[...amounts.entries()].filter(([,amount])=>amount>0).sort((a,b)=>b[1]-a[1]);
+  const total=entries.reduce((sum,[,amount])=>sum+amount,0);
+  if(!total){$('#category-chart').innerHTML='<div class="chart-empty">内訳を表示できるデータがありません</div>';return}
+  let cursor=0;
+  const stops=entries.map(([,amount],index)=>{const start=cursor;cursor+=amount/total*100;return `${chartColors[index%chartColors.length]} ${start}% ${cursor}%`}).join(',');
+  const legend=entries.map(([name,amount],index)=>`<li><i style="--legend-color:${chartColors[index%chartColors.length]}"></i><span>${escapeHtml(name)}</span><strong>${Math.round(amount/total*100)}%</strong><small>${yen.format(amount)}</small></li>`).join('');
+  $('#category-chart').innerHTML=`<div class="donut" style="--segments:conic-gradient(${stops})"><div><strong>${entries.length}</strong><span>カテゴリー</span></div></div><ul class="category-legend">${legend}</ul>`;
+}
+
+function renderItemsChart(receipts) {
+  const items=new Map();
+  receipts.flatMap(receipt=>receipt.items||[]).forEach(item=>{
+    const name=String(item.name||'').trim();if(!name)return;
+    const quantity=Number(item.quantity||1),amount=Number(item.price??(Number(item.unitPrice||0)*quantity));
+    const current=items.get(name)||{quantity:0,amount:0};current.quantity+=quantity;current.amount+=amount;items.set(name,current);
+  });
+  const entries=[...items.entries()].sort((a,b)=>b[1].quantity-a[1].quantity||b[1].amount-a[1].amount).slice(0,5);
+  if(!entries.length){$('#items-chart').innerHTML='<div class="chart-empty">品目を登録するとランキングが表示されます</div>';return}
+  const max=entries[0][1].quantity;
+  $('#items-chart').innerHTML=entries.map(([name,data],index)=>`<div class="item-rank"><span class="rank">${index+1}</span><div class="item-rank-main"><div><strong>${escapeHtml(name)}</strong><small>${data.amount?yen.format(data.amount):'金額未登録'}</small></div><div class="item-meter"><i style="width:${data.quantity/max*100}%"></i></div></div><b>${data.quantity.toLocaleString('ja-JP')}点</b></div>`).join('');
+}
+
+function renderVisualizations(receipts) {
+  renderDailyChart(receipts);renderCategoryChart(receipts);renderItemsChart(receipts);
+  const total=receipts.reduce((sum,r)=>sum+Number(r.total||0),0);
+  const activeDays=new Set(receipts.map(r=>receiptDate(r).getDate())).size;
+  $('#insight-summary').textContent=receipts.length?`${activeDays}日間で ${yen.format(total)} を記録`:'記録が増えると傾向が見えてきます';
+}
+
 function render() {
   const selected=state.receipts.filter(inSelectedMonth);
   $('#month-label').textContent=`${state.month.getFullYear()}年 ${state.month.getMonth()+1}月`;
   $('#stat-total').textContent=yen.format(selected.reduce((sum,r)=>sum+Number(r.total||0),0));
   $('#stat-count').innerHTML=`${selected.length}<small>枚</small>`;
   $('#stat-items').innerHTML=`${selected.reduce((sum,r)=>sum+Number(r.itemCount||0),0)}<small>点</small>`;
+  renderVisualizations(selected);
   const query=$('#search').value.trim().toLowerCase();
   const filtered=selected.filter(r=>!query || [r.storeName,r.category,...(r.items||[]).map(i=>i.name)].join(' ').toLowerCase().includes(query));
   $('#empty').hidden=state.receipts.length!==0;
